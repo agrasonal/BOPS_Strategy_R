@@ -1,7 +1,6 @@
 # Data_Analysis_R_Project
 Impact of Buy-Online-Pick-Up-In-Store (BOPS) Strategy
 
-
 <h2>Introduction</h2>
 
 Omni-channel order fulfillment is all about giving the customer increased choices while reducing the costs of fulfillment. Implementing a BOPS strategy is another way that large retailers like Walmart, Target, JCPenny, etc., with extensive network of physical locations, have begun to use it as both a differentiator and to drive profits. Customers are also benefitting in terms of increased choices, no shipping costs, lesser wait times, convenience, fewer returns, etc. 
@@ -10,7 +9,7 @@ This project analyzes the impact of implementation of BOPS strategy for an onlin
 
 <h2>Data Overview</h2>
 
-The data cover all online transactions made between August 1st, 2010 and July 31st, 2013 for three online channels with store numbers - 2, 6, and 5998.
+The data covers all online transactions made between August 1st, 2010 and July 31st, 2013 for three online channels with store numbers - 2, 6, and 5998.
 <ul>
   <li>Online channels 2 and 6 started the BOPS strategy on August 1st, 2011.</li>
   <li>Online channel 5998 started the BOPS strategy on September 27th, 2012.</li>
