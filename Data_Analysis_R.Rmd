@@ -1,0 +1,1082 @@
+---
+title: "Data_Analysis_R_Final_Project"
+---
+
+```{r}
+# You should generally clear the working space at the start of every R session
+rm(list = ls())
+
+# Set the directory
+setwd("C:/")
+
+# install packages
+#install.packages("readstata13")
+
+# Load libraries
+library(stargazer)
+library(gdata)
+library(ggplot2)
+library(psych) 
+library(ggeffects)
+library(QuantPsyc)
+library(readstata13)
+library(lmtest)
+library(usdm)
+library(multiwayvcov)
+library(sandwich)
+library(foreign)
+library(AER)
+library(aod)
+library(Rcpp)
+library(mfx)
+library(nnet)
+library(reshape2)
+library(msm)
+
+# turn off scientific notation. 
+options(scipen = 9)
+
+```
+#====================================================================================#
+## Read Data
+#====================================================================================#
+```{r}
+cust_Level = read.dta13("C:/")
+ODS_prodcat = read.dta13("C:/")
+ODS_Overall = read.dta13("C:/")
+trans_level = read.dta13("C:/")
+
+head(cust_Level)
+head(ODS_prodcat)
+head(ODS_Overall)
+head(trans_level) # view the first few rows of the data
+
+```
+
+#=======================================================================================#
+## Question1: What is the impact of implementing BOPS strategy on online channel sales?
+#=======================================================================================#
+
+```{r}
+
+#Descriptive Statistics
+stargazer(ODS_Overall, type="text", median=TRUE, iqr=TRUE,digits=1, title="Descriptive Statistics")  
+
+#Filtering data for days before sept.27,2012, when BOPS was implemented only for stores 2&6.
+sales1 <- ODS_Overall[(ODS_Overall$day<786),]
+
+#Add a BIE timeline variable dividing the data into two groups, one before Aug.1, 2011 and the other after.
+#Add a grouping variable for stores dividing the data into two groups, one for 2&6 and the other for 5998.
+sales1$BIE_timeline <- ifelse(sales1$day<366,0,1)
+sales1$group_store <- ifelse((sales1$store_number==2) | (sales1$store_number==6),1,0)
+
+#Assuming mean value for all 'na' values 
+sales1$avg_female[is.na(sales1$avg_female)] <- mean(sales1$avg_female, na.rm = TRUE) 
+sales1$avg_age[is.na(sales1$avg_age)] <- mean(sales1$avg_age, na.rm = TRUE)
+sales1$avg_income[is.na(sales1$avg_income)] <- mean(sales1$avg_income, na.rm = TRUE)
+sales1$avg_childowner[is.na(sales1$avg_childowner)] <- mean(sales1$avg_childowner, na.rm = TRUE)
+sales1$avg_homeowner[is.na(sales1$avg_homeowner)] <- mean(sales1$avg_homeowner, na.rm = TRUE)
+
+stargazer(sales1, type="text", median=TRUE, iqr=TRUE,digits=1, title="Descriptive Statistics")  
+
+#check normalization
+qqnorm(sales1$salesquantity)
+qqline(sales1$salesquantity, col=2)
+ggplot(sales1, aes(x=salesquantity)) + geom_histogram(colour="green", bins= 5)
+
+#Analysing trend in raw dataset with boxplot for salesquantity. 
+df11 <- data.frame(salesquantity=sales1$salesquantity, BIE_timeline=as.factor(sales1$BIE_timeline))
+ggplot(df11, aes(x=BIE_timeline, y=salesquantity, fill=BIE_timeline)) + geom_boxplot() + 
+  xlab("BIE_timeline") + ylab("Sales Quantity") # Boxplot indicates that online purchase quantity decreases after BOPS implementation for stores 2&6.However, we can't come to a conclusion basis this interpretation. 
+
+# Checking for multi-collinearity
+df12=sales1[c("BIE_timeline", "group_store","month_dummy","avg_female","avg_age","avg_income","avg_homeowner", "avg_childowner")]
+round(cor(df12),3) 
+vifcor(df12) # There is no multi-collinearity in the data for the chosen variables.
+
+
+####----------------------IMPACT ON SALES QUANTITY--------------------#####
+
+#Since sales quantity is a non-negative integer value, we are using count data models to understand how it is impacted by BOPS implementation.
+
+poisson11 <- glm(salesquantity~BIE_timeline*group_store+as.factor(month_dummy)+avg_female+avg_age+avg_income+avg_homeowner+avg_childowner, family="poisson", data=sales1)
+stargazer(poisson11,  
+          title="Poisson Results", type="text", 
+          column.labels=c("Model-1"),
+          df=FALSE, digits=2, star.cutoffs = c(0.05,0.01,0.001)) 
+
+## Model fit assessment - Poisson
+poisson11a <- glm(salesquantity~1, data=sales1, family="poisson") #running a comparison with null model. 
+
+lrtest(poisson11, poisson11a) # We conclude that the model does not fit because the goodness-of-fit chi-squared test is statistically significant. If the test had not been statistically significant, it would indicate that the data fit the model well.
+
+##Since Poisson doesn't fit the data, we will check for negative binomial model.
+negbin11 <- glm.nb(salesquantity~BIE_timeline*group_store+as.factor(month_dummy)+avg_female+avg_age+avg_income+avg_homeowner+avg_childowner, data = sales1) 
+stargazer(negbin11,
+          apply.coef = exp, t.auto=F, p.auto = F,
+          title="Negative Bionomial Results", type="text", 
+          column.labels=c("IRRs"),
+          df=FALSE, digits=4, star.cutoffs = c(0.05,0.01,0.001))
+
+
+## Model fit assessment - Negative Binomial
+negbin11a <- glm.nb(salesquantity ~ 1, data = sales1) 
+
+lrtest(negbin11, negbin11a) ## Test results signifies that the model fits the data.
+
+# Check for heteroskedasticity
+gqtest(negbin11) # Goldfeld-Quandt test indicates no heteroskedasticity
+bptest(negbin11) # Breusch-Pagan test indicates heteroskedasticity
+# Since there is heteroskedasticity in the data, we will replace SEs with robust SEs.
+HWrobstder <- sqrt(diag(vcovHC(negbin11, type="HC1"))) # produces Huber-White robust standard errors 
+
+stargazer(negbin11, negbin11,
+          apply.coef = exp, t.auto=F, p.auto = F,
+          se=list(NULL, HWrobstder),
+          title="Negative Binomial Results", type="text", 
+          column.labels=c("Normal SE", "HW-Robust SE"),
+          df=FALSE, digits=3, star.cutoffs = c(0.05,0.01,0.001)) 
+
+# Visualize the output
+meffects11 <- ggpredict(negbin11, terms=c("BIE_timeline", "group_store")) # generates a tidy data frame  
+ggplot(meffects11,aes(x, predicted, colour=group)) + geom_line(size=1.3) + 
+    xlab("BOPS Timeline") + ylab("Sales Quantity") +
+    labs(colour="group_store") + 
+    scale_colour_discrete(labels=c("5998","2&6")) +
+    scale_x_continuous(breaks=c(0,1), labels=c("Time=0", "Time=1")) +
+    theme(axis.title.x=element_blank()) 
+## Interpretation- The interaction coefficient for BIE_timeline:group_store is significant with value 0.667. This means that the BOPS implementation is associated with 33.3% decrease in the sales quantity. This doesn't seem intuitive at first. However, a likely reason for this decrease is the knowledge of inventory that is available to a customer after BOPS implementation.
+
+
+####======================== IMPACT ON SALES VALUE=======================================####
+
+# We are using OLS model to esatimate the imapct of BOPS implementation on sales value 
+
+#checking normalization
+qqnorm(sales1$salesvalue)
+qqline(sales1$salesvalue, col=2)
+
+ggplot(sales1, aes(x=salesvalue)) + geom_histogram(colour="green", bins = 10)
+ggplot(sales1, aes(x=log(1+sales1$salesvalue))) + geom_histogram(colour="green", bins = 30)
+
+#Analysing trend in raw dataset with boxplot for salesvalue 
+df13 <- data.frame(salesvalue=sales1$salesvalue, BIE_timeline=as.factor(sales1$BIE_timeline))
+ggplot(df13, aes(x=BIE_timeline, y=salesvalue, fill=BIE_timeline)) + geom_boxplot() + 
+  xlab("BIE_timeline") + ylab("Sales Value") # Boxplot indicates that online purchase quantity decreases after BOPS implementation for stores 2&6.However, we can't come to a conclusion basis this interpretation. 
+
+#Since sales value is a dollar value, we will use a linear interaction model with log transformed dependent variable.
+sales1$log_salesvalue <- log(1+sales1$salesvalue)
+
+ols11 = lm(log_salesvalue~BIE_timeline*group_store+as.factor(month_dummy)+avg_female+avg_age+avg_income+avg_homeowner+avg_childowner, data=sales1)
+stargazer(ols11, 
+          title="Regression Results", type="text", 
+          column.labels=c("Model-1"),
+          df=FALSE, digits=2, star.cutoffs = c(0.05,0.01,0.001)) 
+
+# Check for heteroskedasticity
+gqtest(ols11) # Goldfeld-Quandt test indicates no heteroskedasticity
+bptest(ols11) # Breusch-Pagan test indicates heteroskedasticity
+# Since there is heteroskedasticity in the data, we will replace SEs with robust SEs.
+HWrobstder <- sqrt(diag(vcovHC(ols11, type="HC1"))) # produces Huber-White robust standard errors 
+
+stargazer(ols11, ols11,
+          se=list(NULL, HWrobstder),
+          title="OLS Results", type="text", 
+          column.labels=c("Normal SE", "HW-Robust SE"),
+          df=FALSE, digits=3, star.cutoffs = c(0.05,0.01,0.001)) 
+
+# Visualize the output
+meffects12 <- ggpredict(ols11, terms=c("BIE_timeline", "group_store")) # generates a tidy data frame  
+ggplot(meffects12,aes(x, predicted, colour=group)) + geom_line(size=1.3) + 
+    xlab("BOPS Timeline") + ylab("Sales Value") +
+    labs(colour="group_store") + 
+    scale_colour_discrete(labels=c("5998","2&6")) +
+    scale_x_continuous(breaks=c(0,1), labels=c("Time=0", "Time=1")) +
+    theme(axis.title.x=element_blank())
+## Interpretation -The interaction coefficient for BIE_timeline:group_store is significant with value -0.494. This means that the BOPS implementation is associated with 49.4% decrease in the sales value. Like quantity, sales value is also decreasing after BOPS implementation. The percentage reduction in sales value is more than the reduction in sales qunatity. This implies that sales in general is reducing for relatively high priced items.
+```
+
+#=======================================================================================#
+## Question2: What is the impact of implementing BOPS strategy on online channel returns?
+#=======================================================================================#
+
+```{r}
+#check normalization
+qqnorm(sales1$returnquantity)
+qqline(sales1$returnquantity, col=2)
+ggplot(sales1, aes(x=returnquantity)) + geom_histogram(colour="green", bins= 30)
+
+#Analysing trend in raw dataset with boxplot for returnquantity 
+df21 <- data.frame(returnquantity=sales1$returnquantity, BIE_timeline=as.factor(sales1$BIE_timeline))
+ggplot(df21, aes(x=BIE_timeline, y=returnquantity, fill=BIE_timeline)) + geom_boxplot() + 
+  xlab("BIE_timeline") + ylab("Return Quantity") # Boxplot indicates that return quantity should decrease after BOPS implementation for stores 2&6.However, we can't come to a conclusion basis this interpretation. 
+
+# Checking for multi-collinearity
+# sales value is 0 for 30 rows is while sales quantity exists (complementory products or service)
+df22=sales1[c("BIE_timeline", "group_store","salesquantity", "month_dummy","avg_female","avg_age","avg_income", "avg_childowner")]
+round(cor(df22),3) 
+vifcor(df22)
+
+####======================IMPACT ON RETURN QUANTITY =====================####
+
+sales1$log_salesquantity <- log(sales1$salesquantity)
+  
+poisson21 <- glm(returnquantity~BIE_timeline*group_store+log_salesquantity+as.factor(month_dummy)+avg_age+avg_income+avg_female, family="poisson", data=sales1)
+stargazer(poisson21,  
+          title="Poisson Results", type="text", 
+          column.labels=c("Model-1"),
+          df=FALSE, digits=2, star.cutoffs = c(0.05,0.01,0.001)) 
+
+## Model fit assessment 
+poisson21a <- glm(returnquantity~1, data=sales1, family="poisson") # running a comparison with null model. 
+lrtest(poisson21, poisson21a) # We conclude that the model does not fit because the goodness-of-fit chi-squared test is statistically significant. If the test had not been statistically significant, it would indicate that the data fit the model well.
+
+##Since Poisson doesn't fit the data, we will check for negative binomial model.
+negbin21 <- glm.nb(returnquantity~BIE_timeline*group_store+log_salesquantity+as.factor(month_dummy)+avg_age+avg_income+avg_female, data = sales1) 
+stargazer(negbin21,
+          apply.coef = exp, t.auto=F, p.auto = F,
+          title="Negative Bionomial Results", type="text", 
+          column.labels=c("IRRs"),
+          df=FALSE, digits=4, star.cutoffs = c(0.05,0.01,0.001))
+
+## Model fit assessment - Negative Binomial
+negbin21a <- glm.nb(salesquantity ~ 1, data = sales1) 
+lrtest(negbin21, negbin21a)
+
+# Check for heteroskedasticity
+gqtest(negbin21) # Goldfeld-Quandt test indicates no heteroskedasticity
+bptest(negbin21) # Breusch-Pagan test indicates heteroskedasticity
+
+# Since there is heteroskedasticity in the data, we will replace SEs with robust SEs.
+HWrobstder <- sqrt(diag(vcovHC(negbin21, type="HC1"))) # produces Huber-White robust standard errors 
+
+stargazer(negbin21, negbin21, 
+          apply.coef = exp, t.auto=F, p.auto = F,
+          se=list(NULL, HWrobstder),
+          title="Negative Binomial Results", type="text", 
+          column.labels=c("Normal SE", "HW-Robust SE"),
+          df=FALSE, digits=3, star.cutoffs = c(0.05,0.01,0.001))
+
+# Visualize the output
+meffects21 <- ggpredict(negbin21, terms=c("BIE_timeline", "group_store")) # generates a tidy data frame at two different values of BIE_timeline - before and after BOPS implementation.  
+ggplot(meffects21,aes(x, predicted, colour=group)) + geom_line(size=1.3) + 
+    xlab("BOPS Timeline") + ylab("Return Quantity") +
+    labs(colour="group_store") + 
+    scale_colour_discrete(labels=c("5998","2&6")) +
+    scale_x_continuous(breaks=c(0,1), labels=c("Time=0", "Time=1")) +
+    theme(axis.title.x=element_blank())
+
+## Interpretation - The interaction coefficient for BIE_timeline:group_store is significant with value 0.828. This means that the BOPS implementation is associated with 17.2% decrease in the return quantity.
+
+
+####====================== IMPACT ON RETURN VALUE==============================####
+
+qqnorm(sales1$returnvalue)
+qqline(sales1$returnvalue, col=2)
+ggplot(sales1, aes(x=returnvalue)) + geom_histogram(colour="green", bins = 30) 
+ggplot(sales1, aes(x=log(1+sales1$returnvalue))) + geom_histogram(colour="green", bins = 30)
+
+#Analysing trend in raw dataset with boxplot for returnvalue 
+df23 <- data.frame(returnvalue=sales1$returnvalue, BIE_timeline=as.factor(sales1$BIE_timeline))
+ggplot(df23, aes(x=BIE_timeline, y=returnvalue, fill=BIE_timeline)) + geom_boxplot() + 
+  xlab("BIE_timeline") + ylab("Sales") # Boxplot indicates that return value decreases after BOPS implementation for stores 2&6.However, we can't come to a conclusion basis this interpretation. 
+
+#Since return value is a dollar value, we will use a linear interaction model with log transformed dependent variable.
+sales1$log_returnvalue <- log(1+sales1$returnvalue)
+ols21 = lm(log_returnvalue~BIE_timeline*group_store+log_salesvalue+as.factor(month_dummy)+avg_age+avg_income+avg_female, data=sales1)
+stargazer(ols21, 
+          title="Regression Results", type="text", 
+          column.labels=c("Model-1"),
+          df=FALSE, digits=2, star.cutoffs = c(0.05,0.01,0.001)) 
+
+# Check for heteroskedasticity
+gqtest(ols21) # Goldfeld-Quandt test indicates no heteroskedasticity
+bptest(ols21) # Breusch-Pagan test indicates heteroskedasticity
+# Since there is heteroskedasticity in the data, we will replace SEs with robust SEs.
+HWrobstder <- sqrt(diag(vcovHC(ols21, type="HC1"))) # produces Huber-White robust standard errors 
+
+stargazer(ols21, ols21,
+          se=list(NULL, HWrobstder),
+          title="Regression Results", type="text", 
+          column.labels=c("Normal SE", "HW-Robust SE"),
+          df=FALSE, digits=3, star.cutoffs = c(0.05,0.01,0.001))
+
+meffects22 <- ggpredict(ols21, terms=c("BIE_timeline", "group_store")) # generates a tidy data frame  
+
+ggplot(meffects22,aes(x, predicted, colour=group)) + geom_line(size=1.3) + 
+    xlab("BOPS Timeline") + ylab("Return Value") +
+    labs(colour="group_store") + 
+    scale_colour_discrete(labels=c("5998","2&6")) +
+    scale_x_continuous(breaks=c(0,1), labels=c("Time=0", "Time=1")) +
+    theme(axis.title.x=element_blank())
+
+## Interpretation - The interaction coefficient for BIE_timeline:group_store is significant with value (-0.660). This means that the BOPS implementation is associated with ~66% decrease in the return value.
+
+```
+
+#===============================================================================================
+## Question3: What is the impact of using the BOPS service on online customer purchase behavior?
+#===============================================================================================#
+```{r}
+#To answer question 3 we are using consumer data. Following variables in consumer data have missing values:
+
+# 1.Female -(~12%) values are missing
+# 2.Age_band
+# 3.Est_income_code 
+# 4.Homeowner_code 
+# 5.Child
+
+#Since female variable has a lot of missing entries, we used female variable as control variable and removed rows where female, homeonwer and child values are missing.
+
+#In both the approaches missing values in age_band and est_income_code are replaced with the median values of these variables.
+
+cust_Level$childn = ifelse(cust_Level$child=="Y",1,ifelse(cust_Level$child=="N",0,cust_Level$child))
+cust_Level$homeowner_coden = ifelse(cust_Level$homeowner_code=="O",1,ifelse(cust_Level$homeowner_code=="R",0,cust_Level$homeowner_code))
+cust_Level$childn <- as.numeric(cust_Level$childn)
+cust_Level$homeowner_coden <- as.numeric(cust_Level$homeowner_coden)
+
+#Descriptive Statistics
+stargazer(cust_Level, type="text", median=TRUE, iqr=TRUE,digits=2, title="Descriptive Statistics")
+
+sales2 <- cust_Level[which((cust_Level$female==1 | cust_Level$female==0) & (cust_Level$child =="Y" | cust_Level$child =="N"),(cust_Level$homeowner_code=="R" | cust_Level$homeowner_code=="O")),]
+
+# Replacing NA's with mean values for other variables.
+sales2$age_band[is.na(sales2$age_band)] = median(sales2$age_band, na.rm = TRUE)
+
+#Summary stats after replacing NA's with median and removing rows where "female","homeowner_code" & "child" are NA.
+stargazer(sales2, type="text", median=TRUE, iqr=TRUE, digits=1, title="Descriptive Statistics")  
+#Check Normality
+ggplot(sales2, aes(x=salesvalue)) + geom_histogram(colour="green", bins =30)
+##salesvale doesn't seem to follow normal dist, so will use log of salesvalue as dependent variable.
+
+sales2$log_salesvalue <- log(1+sales2$salesvalue)
+#since salesvalue is 0 at some places, we are taking log of (1+salesvalue)
+
+ggplot(sales2, aes(x=log_salesvalue)) + geom_histogram(colour="green", bins =30)
+ggplot(sales2, aes(x=salesquantity)) + geom_histogram(colour="green" , bins = 30) 
+
+## Check Multicollinearity 
+df3 = sales2[c("homeowner_coden","purchase_time_period","length_of_residence","est_income_code","age_band", "bops_in_effect", "bops_user", "childn","female","store_number")]
+round(cor(df3),3) 
+vifcor(df3)
+
+####=============================IMPACT ON SALES QUANTITY=========================####
+
+poisson31 <- glm(salesquantity~ bops_in_effect*bops_user + purchase_time_period + est_income_code + age_band + female + factor(store_number) + homeowner_coden +childn, family="poisson", data=sales2)
+
+stargazer(poisson31,  
+          title="Poisson Results", type="text", 
+          column.labels=c("Model-1"),
+          df=FALSE, digits=2, star.cutoffs = c(0.05,0.01,0.001)) 
+        
+## Model fit assessment 
+poisson31a <- glm(salesquantity~1, data=sales2, family="poisson") 
+
+##running a comparison with null model. 
+lrtest(poisson31, poisson31a) 
+# We conclude that the model does not fit because the goodness-of-fit chi-squared test is statistically significant. If the test had not been statistically significant, it would indicate that the data fit the model well.
+ 
+##Since Poisson doesn't fit the data, we will check for negative binomial model.
+
+##This model has child as control variable
+negbin31 <- glm.nb(salesquantity~ bops_in_effect*bops_user + purchase_time_period + est_income_code + age_band + female + factor(store_number) + homeowner_coden + childn, data = sales2)
+
+stargazer(negbin31,
+          apply.coef = exp, t.auto=F, p.auto = F,
+          title="Negative Bionomial Results", type="text", 
+          column.labels=c("IRRs negbin31"),
+          df=FALSE, digits=4, star.cutoffs = c(0.05,0.01,0.001))
+
+## Model fit assessment - Negative Binomial
+negbin31a <- glm.nb(salesquantity ~ 1, data = sales2) 
+lrtest(negbin31, negbin31a)
+
+# Check for heteroskedasticity
+gqtest(negbin31) # Goldfeld-Quandt test indicates no heteroskedasticity
+bptest(negbin31) # Breusch-Pagan test indicates heteroskedasticity
+
+# Since there is heteroskedasticity in the data, we will replace SEs with robust SEs.
+HWrobstder <- sqrt(diag(vcovHC(negbin31, type="HC1"))) # produces Huber-White robust standard errors 
+
+stargazer(negbin31, negbin31,  
+          se=list(NULL, HWrobstder),
+          apply.coef = exp, t.auto=F, p.auto = F,
+          title="Negative Binomial Results", type="text", 
+          column.labels=c("Normal SE", "HW-Robust SE"),
+          df=FALSE, digits=3, star.cutoffs = c(0.05,0.01,0.001)) 
+
+# Visualize the output- generated a data frame at two different values of bops_in_effect for two groups - who used BOPS and who didn't after BOPS implementation. 
+meffects31 <- ggpredict(negbin31, terms=c("bops_in_effect","bops_user")) 
+
+ggplot(meffects31,aes(x, predicted, colour=group)) + geom_line(size=1.3) + 
+    xlab("bops_in_effect") + ylab("Sales Quantity") +
+    labs(colour="bops_user") + 
+    scale_colour_discrete(labels=c("Not used BOPS","Used BOPS")) +
+    scale_x_continuous(breaks=c(0,1), labels=c("bops_not_in_effect", "bops_in_effect")) +
+    theme(axis.title.x=element_blank())
+
+#Interpretation - The interaction coefficient for bops_in_effect:bops_user is significant with value (0.967). This means that the usage of BOPS service is associated with ~3.3% decrease in sales quantity.
+
+####====================== IMPACT ON SALES VALUE===========================####
+
+ols32 = lm(log_salesvalue~ bops_in_effect*bops_user + purchase_time_period + est_income_code + age_band + factor(store_number) + female + homeowner_coden +childn, data=sales2)
+stargazer(ols32,
+          title="Regression Results", type="text", 
+          column.labels=c("Model-OLS32","Model-OLS31"),
+          df=FALSE, digits=2, star.cutoffs = c(0.05,0.01,0.001)) 
+
+# Check for heteroskedasticity
+gqtest(ols32) # Goldfeld-Quandt test indicates no heteroskedasticity
+bptest(ols32) # Breusch-Pagan test indicates heteroskedasticity
+
+# Since there is heteroskedasticity in the data, we will replace SEs with robust SEs.
+HWrobstder <- sqrt(diag(vcovHC(ols32, type="HC1"))) # produces Huber-White robust standard errors 
+
+stargazer(ols32, ols32,  
+          se=list(NULL, HWrobstder),
+          title="Regression Results", type="text", 
+          column.labels=c("Normal SE", "HW-Robust SE"),
+          df=FALSE, digits=3, star.cutoffs = c(0.05,0.01,0.001)) 
+
+# Visualize the output
+
+meffects32 <- ggpredict(ols32, terms=c("bops_in_effect","bops_user")) 
+
+#generates a tidy data frame at two different values of bops_in_effect for two groups - who used BOPS and who didn't after BOPS implementation.  
+
+ggplot(meffects32,aes(x, predicted, colour=group)) + geom_line(size=1.3) + 
+    xlab("bops_in_effect") + ylab("Sales Value") +
+    labs(colour="bops_user") + 
+    scale_colour_discrete(labels=c("Not used BOPS","Used BOPS")) +
+    scale_x_continuous(breaks=c(0,1), labels=c("bops_not_in_effect", "bops_in_effect")) +
+    theme(axis.title.x=element_blank())
+
+#Interpretation - The interaction coefficient for bops_in_effect:bops_user is insignificant. Thus, we cannot comment about the impact of BOPS usage on sales quantity.
+
+```
+
+#=======================================================================================#
+## Question4: What is the impact of using the BOPS service on online customer return behavior?
+#=======================================================================================#
+
+```{r}
+
+#Descriptive Statistics
+stargazer(trans_level, type="text", median=TRUE, iqr=TRUE,digits=1, title="Descriptive Statistics")  
+
+ggplot(trans_level, aes(x=price)) + geom_histogram(colour="green", bins = 30)
+ggplot(trans_level, aes(x=log(price))) + geom_histogram(colour="green", bins = 30) #Histogram plot shows that log-transformed price look more like a normal. Therefore, we will use log-transformed price, instead of the raw price.
+trans_level$logprice <- log(1+trans_level$price) # To take care about the negative values, scaling doesn't have any impact
+
+# Creating a subset to analyze the impact of using BOPS service when BOPS was in effect
+trans_level1 <- subset(trans_level, trans_level$bops == 1 | trans_level$bops == 0)
+
+# Converting child variable to a dummy variable.
+trans_level1$child = ifelse(trans_level1$child== "Y",1,0) 
+# Converting homeowner_code to a dummy variable.
+trans_level1$homeowner_code = ifelse(trans_level1$homeowner_code== "O",1,0) 
+
+# 183466 records (~15.6% of trans_level1) of female variable have NA values
+table(trans_level1$female == 'NA')
+
+# To replace NA values of est_income_code, age band and length of residence with their median values
+trans_level1$est_income_code[is.na(trans_level1$est_income_code)] <- median(trans_level1$est_income_code, na.rm = TRUE)
+trans_level1$age_band[is.na(trans_level1$age_band)] <- median(trans_level1$age_band, na.rm = TRUE)
+trans_level1$length_of_residence[is.na(trans_level1$length_of_residence)] <- median(trans_level1$length_of_residence, na.rm = TRUE)
+
+stargazer(trans_level1, type="text", median=TRUE, iqr=TRUE,digits=2, title="Descriptive Statistics")  
+
+# Checking for multi-collinearity
+df41=trans_level1[c("bops","month_dummy","product_category","female","logprice","year", "age_band", "est_income_code")]
+round(cor(df41),3) 
+vifcor(df41)
+
+#To remove NA value from female
+trans_level2 <- subset(trans_level1, trans_level1$female!= 'NA')
+stargazer(trans_level2, type="text", median=TRUE, iqr=TRUE,digits=1, title="Descriptive Statistics")  
+
+# To remove 3 blank records of product category as the number of records are less and we cannot replace the missing values by its mean or median
+trans_level2 <- na.omit(trans_level2)
+stargazer(trans_level2, type="text", median=TRUE, iqr=TRUE,digits=1, title="Descriptive Statistics") # Total number of records are same after cleansing the data 
+
+# Checking multi collinearity
+df42=trans_level2[c("bops","month_dummy","product_category","female","logprice","year", "age_band", "est_income_code")]
+round(cor(df42),3) 
+vifcor(df42)
+
+# Creating factor variables of store number, year and month_dummy if we have to use the factor variable
+trans_level2$f_store <- as.factor(trans_level2$store_number)
+trans_level2$f_year <- as.factor(trans_level2$year)
+trans_level2$f_month <- as.factor(trans_level2$month_dummy)
+
+#####=================================== OLS MODEL =========================================####
+
+lpm41<- lm(return~bops+logprice+product_category+f_store+est_income_code+female+age_band+f_month+f_year, data=trans_level2) 
+
+stargazer(lpm41,  
+          title="Regression Results", type="text", 
+          column.labels=c("Model-1"),
+          df=FALSE, digits=4, star.cutoffs = c(0.05,0.01,0.001))
+# Usage of BOPS service is associated with 1.51 percentage points increase in return probability. This means that a BOPS user is 1.51 percentage points more likely to return a jewellery item.
+
+## You can also use heteroscedastic-robust standard errors for 2SLS
+
+gqtest(lpm41) # Significant Goldfeld-Quandt test indicates heteroskedasticity 
+bptest(lpm41) # Significant Breusch-Pagan test  indicates heteroskedasticity
+
+consstder_lpm41 <- sqrt(diag(vcovHC(lpm41, type="const"))) # produces normal standard errors
+HWrobstder_lpm41 <- sqrt(diag(vcovHC(lpm41, type="HC1"))) # produces Huber-White robust standard errors 
+
+stargazer(lpm41, lpm41,  
+         se=list(consstder_lpm41, HWrobstder_lpm41),
+         title="Regression Results", type="text", 
+         column.labels=c("Normal SE", "HW-Robust SE"),
+         df=FALSE, digits=4, star.cutoffs = c(0.05,0.01,0.001))  # displays normal and HW robust  standard errors. # we observe that with robust standard errors.
+
+trans_level2$predictedprobability_lm<-predict(lpm41) # let's look at the predicted probability of return for each observation in the data 
+
+ggplot(trans_level2, aes(y=predictedprobability_lm, x=bops)) + geom_point(size=2.5)
+range(trans_level2$predictedprobability_lm) # Range of the predicted probability tells us there are "negative" probabilities of return for some observations!!! This cannot be possible. Therefore, linear probability model is not the right model 
+
+confint(lpm41,"bops") # Generating confidence interval for variable BOPS
+
+####================================== LOGIT MODEL ======================================####
+
+sum(trans_level2$return==0)
+sum(trans_level2$return==1) # We have 99476 observations with Return=1 and 887623 observations with Return=0. Considering that we will estimate 21 parameters, we satisfy the minimum 10:1 ratio requirement
+
+logit42<- glm(return~bops+logprice+product_category+f_store+f_month+f_year+est_income_code+female+age_band, data=trans_level2, family="binomial") 
+stargazer(logit42, 
+          apply.coef = exp, t.auto=F, p.auto = F,
+          title="Regression Results", type="text", 
+          column.labels=c("OddsRatios"),
+          df=FALSE, digits=4, star.cutoffs = c(0.05,0.01,0.001))
+# The odds of being returned (versus not being returned) increase by a factor of 1.2068 when a customer is a BOPS user.
+
+# Model fit assessment
+logit42a <- glm(return~1, data=trans_level2, family="binomial") # This is the command to run a logit on null model 
+lrtest(logit42, logit42a) #We compare the null model to our model to determine the model fit. The chi-square of 26246 with 21 degrees of freedom and an associated p-value of less than 0.001 tells us that our model as a whole fits significantly better than the null model.
+
+## Obtain marginal effects
+a42 <- logitmfx(formula=return~bops+logprice+product_category+f_store+f_month+f_year+est_income_code+female+age_band, data=trans_level2) # We can generate the marginal effects with this command. 
+
+marginaleffects42 <- a42$mfxest[,1]
+marg.std.err42 <- a42$mfxest[,2]
+
+stargazer(logit42, 
+          omit=c("Constant"),
+          coef = list(marginaleffects42), se = list(marg.std.err42),
+          title="Regression Results", type="text", 
+          column.labels=c("Marginal Effects"),
+          df=FALSE, digits=5, star.cutoffs = c(0.05,0.01,0.001))
+# Usage of BOPS service increases the probability of return by 0.01603, holding other variables at their means.
+
+b42 <- logitmfx(formula=return~bops+logprice+product_category+f_store+f_month+f_year+est_income_code+female+age_band, data=trans_level2, robust=TRUE) # We can obtain the marginal effects from a logit that uses robust standard errors. Note that marginal effects do not change, however, std. errors, and therefore, p-values change.
+rob.std.err42 <- b42$mfxest[,2]
+
+stargazer(logit42, logit42,
+          se=list(marg.std.err42, rob.std.err42),
+          omit=c("Constant"),
+          coef = list(marginaleffects42,marginaleffects42),
+          title="Regression Results", type="text", 
+          column.labels=c("Marginal Effects","Marg.Eff.w/RobStdEr" ),
+          df=FALSE, digits=5, star.cutoffs = c(0.05,0.01,0.001))
+# Usage of BOPS service increases the probability of return by 0.01603, holding other variables at their means.
+
+pred42 = predict(logit42, data=trans_level2, type="response") 
+return_prediction42 <- ifelse(pred42 >= 0.5,1,0)  
+misClasificError42 <- mean(return_prediction42 != trans_level2$return) 
+print(paste('Accuracy',1-misClasificError42)) # the correct classification rate increased to 89.92%
+table(trans_level2$return, pred42>=0.5)
+
+# The coefficient of BOPS from linear probability model is 0.0151 with confidence intervals (0.01369205, 0.01651074) and the coefficient of LOGIT model is 0.01603. Since coefficent of LOGIT model lies in the confidence interval of coefficient of linear probability model, we can say that these models return similar results.
+
+####========================== TEST FOR ENDOGENEITY USING OLS===============================####
+
+# With length of residence, child as instrument variables
+endo41<- ivreg(return~bops+logprice+product_category+f_store+f_month+f_year+est_income_code+female+age_band|length_of_residence+child+logprice+product_category+f_store+f_month+f_year+est_income_code+female+age_band, data=trans_level2)
+# The significant test statistics indicates that endogeneity exists and OLS results model will generate biased effects. Both relevance and exogeneity assumption has passed. Sargan statistic is not significant, meaning the instruments are exogenous. Weak instrument statistic is the F-statistic from the first stage. Since it is 121.89>10, it indicates the instruments are relevant.The significant durbin-wu-hausman test statistics indicates that endogeneity exists and OLS results model will generate biased effects.
+summary(endo41,diagnostics = TRUE) 
+
+stargazer(endo41,  
+          title="Regression Results", type="text", 
+          column.labels=c("Endo442"),
+          df=FALSE, digits=3, star.cutoffs = c(0.05,0.01,0.001))
+
+# Interpretations: After treating endogeneity in our model, the coefficient for BOPS in 2SLS model is 0.369. This means that a BOPS user is 36.9 percentage points more likely to return a jewellery item. Since the results from our OLS and Logit models were similar, we are proceeding with 2SLS results.
+
+```
+#==============================================================================================#
+## Question5: What is the impact of implementing BOPS strategy on product-level sales and returns?
+#==============================================================================================#
+
+```{r}
+#Descriptive Statistics
+stargazer(ODS_prodcat, type="text", median=TRUE, iqr=TRUE,digits=1, title="Descriptive Statistics")  
+
+#Filtering data for days before sept.27,2012
+sales5 <- ODS_prodcat[((ODS_prodcat$day<788) | (ODS_prodcat$day==788)),]
+stargazer(sales5, type="text", median=TRUE, iqr=TRUE, digits=1, title="Descriptive Statistics")  
+#Add a BIE timeline variable dividing the data into two groups, one before Aug.1, 2011 and the other after.
+sales5$BIE_timeline_PC <- ifelse(sales5$day<366,0,1)
+
+#Add a grouping variable for stores dividing the data into two groups, one for 2 and 6 and the other for 5998.
+sales5$group_store_PC <- ifelse((sales5$store_number==2) | (sales5$store_number==6),1,0)
+
+#Convert product category and month to factor variables
+sales5$factor_PC <- as.factor(sales5$product_category)
+sales5$factor_Month <- as.factor(sales5$month_dummy)
+
+#Assuming mean value for all 'na' values 
+sales5$avg_female[is.na(sales5$avg_female)] <- mean(sales5$avg_female, na.rm = TRUE) 
+sales5$avg_age[is.na(sales5$avg_age)] <- mean(sales5$avg_age, na.rm = TRUE)
+sales5$avg_income[is.na(sales5$avg_income)] <- mean(sales5$avg_income, na.rm = TRUE)
+sales5$avg_homeowner[is.na(sales5$avg_homeowner)] <- mean(sales5$avg_homeowner, na.rm = TRUE)
+sales5$avg_residency[is.na(sales5$avg_residency)] <- mean(sales5$avg_residency, na.rm = TRUE)
+sales5$avg_childowner[is.na(sales5$avg_childowner)] <- mean(sales5$avg_childowner, na.rm = TRUE)
+
+#Descriptive Statistics after placing mean values for all 'na' values 
+stargazer(sales5, type="text", median=TRUE, iqr=TRUE,digits=1, title="Descriptive Statistics")  
+
+#Generate plot for Sales Value
+ggplot(sales5, aes(x=salesvalue)) + geom_histogram(colour="green", bins =30)
+ggplot(sales5, aes(x=log(1+sales5$salesvalue))) + geom_histogram(colour="green", bins =30)
+
+#Generate plot for Return Value
+ggplot(sales5, aes(x=returnvalue)) + geom_histogram(colour="green", bins =30) 
+ggplot(sales5, aes(x=log(1+sales5$returnvalue))) + geom_histogram(colour="green", bins =30)
+
+####======================IMPACT ON SALES QUANTITY==============================####
+
+#Count Data model approach for sales quantity 
+#Poisson Model
+poisson5 <- glm(salesquantity~BIE_timeline_PC*group_store_PC+factor_PC+avg_female+avg_age+avg_income+avg_homeowner+avg_childowner+factor_Month, family="poisson", data=sales5)
+stargazer(poisson5,  
+          title="Poisson Results", type="text", 
+          column.labels=c("Model-1"),
+          df=FALSE, digits=2, star.cutoffs = c(0.05,0.01,0.001)) 
+
+#Model fit assessment 
+poisson5a <- glm(salesquantity~1, data=sales5, family="poisson") #running a comparison with null model. 
+
+lrtest(poisson5, poisson5a) # We conclude that the model does not fit because the goodness-of-fit chi-squared test is statistically significant. If the test had not been statistically significant, it would indicate that the data fit the model well.
+
+#Since Poisson doesn't fit the data, we will check for negative binomial model.
+#Negative Binomial Model
+negbin5 <- glm.nb(salesquantity~BIE_timeline_PC*group_store_PC+factor_PC+avg_female+avg_age+avg_income+avg_homeowner+avg_childowner+factor_Month, data = sales5) 
+
+stargazer(negbin5,
+          apply.coef = exp, t.auto=F, p.auto = F,
+          title="Negative Bionomial Results", type="text", 
+          column.labels=c("IRRs"),
+          df=FALSE, digits=4, star.cutoffs = c(0.05,0.01,0.001))
+
+#Model fit assessment 
+negbin5a <- glm.nb(salesquantity~1, data=sales5) #running a comparison with null model. 
+
+lrtest(negbin5, negbin5a) # We conclude that the model fit because the goodness-of-fit chi-squared test is statistically significant.
+
+# Check for heteroskedasticity
+gqtest(negbin5) # Goldfeld-Quandt test indicates no heteroskedasticity
+bptest(negbin5) # Breusch-Pagan test indicates heteroskedasticity
+
+# Since there is heteroskedasticity in the data, we will replace SEs with robust SEs.
+HWrobstder <- sqrt(diag(vcovHC(negbin5, type="HC1"))) # produces Huber-White robust standard errors 
+
+stargazer(negbin5, negbin5,  
+          apply.coef = exp, t.auto=F, p.auto = F,
+          se=list(NULL, HWrobstder),
+          title="Negative Binomial Results", type="text", 
+          column.labels=c("Normal SE", "HW-Robust SE"),
+          df=FALSE, digits=3, star.cutoffs = c(0.05,0.01,0.001)) 
+
+# Visualize the output
+meffects51 <- ggpredict(negbin5, terms=c("BIE_timeline_PC", "group_store_PC")) 
+# generates a tidy data frame at two different values of BIE_timeline - before and after BOPS implementation.  
+
+ggplot(meffects51,aes(x, predicted, colour=group)) + geom_line(size=1.3) + 
+    xlab("BOPS Timeline_PC") + ylab("Sales Quantity") +
+    labs(colour="group_store_PC") + 
+    scale_colour_discrete(labels=c("5998","2&6")) +
+    scale_x_continuous(breaks=c(0,1), labels=c("Time = 0", "Time = 1")) +
+    theme(axis.title.x=element_blank())
+
+## The interaction coefficient of BIE_timeline_PC:group_store_PC is significant with IRR value 0.6834. This means that BOPS implementation is associated with 31.66% decrease in product-level sales quantity.
+
+
+####======================IMPACT ON SALES VALUE==============================####
+
+#Since sales value is a dollar value, we will use a linear interaction model with log transformed dependent variable.
+sales5$log_salesvalue <- log(1+sales5$salesvalue)
+
+#OLS model approach for sales quantity 
+ols51 = lm(log_salesvalue~BIE_timeline_PC*group_store_PC+factor_PC+avg_female+avg_age+avg_income+avg_homeowner+avg_childowner+factor_Month, data=sales5)
+stargazer(ols51, 
+          title="Regression Results", type="text", 
+          column.labels=c("Model-1"),
+          df=FALSE, digits=2, star.cutoffs = c(0.05,0.01,0.001)) 
+
+# Check for heteroskedasticity
+gqtest(ols51) # Goldfeld-Quandt test indicates no heteroskedasticity
+bptest(ols51) # Breusch-Pagan test indicates heteroskedasticity
+# Since there is heteroskedasticity in the data, we will replace SEs with robust SEs.
+HWrobstder <- sqrt(diag(vcovHC(ols51, type="HC1"))) # produces Huber-White robust standard errors 
+
+stargazer(ols51, ols51,  
+          se=list(NULL, HWrobstder),
+          title="Negative Binomial Results", type="text", 
+          column.labels=c("Normal SE", "HW-Robust SE"),
+          df=FALSE, digits=3, star.cutoffs = c(0.05,0.01,0.001)) 
+
+
+meffects52 <- ggpredict(ols51, terms=c("BIE_timeline_PC", "group_store_PC")) # generates a tidy data frame  
+# Visualize the output
+ggplot(meffects52,aes(x, predicted, colour=group)) + geom_line(size=1.3) + 
+    xlab("BOPS Timeline_PC") + ylab("Sales Value") +
+    labs(colour="group_store_PC") + 
+    scale_colour_discrete(labels=c("5998","2&6")) +
+    scale_x_continuous(breaks=c(0,1), labels=c("Time = 0", "Time = 1")) +
+    theme(axis.title.x=element_blank())
+
+## The interaction coefficient of BIE_timeline_PC:group_store_PC is significant with value -0.288 . This means that BOPS implementation is associated with 28.8% decrease in product-level sales value.
+
+####======================IMPACT ON RETURN QUANTITY==============================####
+
+#Count Data model approach for return quantity 
+#Poisson Model
+poisson52 <- glm(returnquantity~BIE_timeline_PC*group_store_PC+factor_PC+salesquantity+avg_female+avg_age+avg_income+factor_Month, family="poisson", data=sales5)
+stargazer(poisson52,  
+          title="Poisson Results", type="text", 
+          column.labels=c("Model-1"),
+          df=FALSE, digits=2, star.cutoffs = c(0.05,0.01,0.001)) 
+
+## Model fit assessment 
+poisson52a <- glm(returnquantity~1, data=sales5, family="poisson") # running a comparison with null model. 
+
+lrtest(poisson52, poisson52a) # We conclude that the model does not fit because the goodness-of-fit chi-squared test is statistically significant. If the test had not been statistically significant, it would indicate that the data fit the model well.
+
+##Since Poisson doesn't fit the data, we will check for negative binomial model.
+#Negative Binomial Model
+negbin53 <- glm.nb(returnquantity~BIE_timeline_PC*group_store_PC+factor_PC+salesquantity+avg_female+avg_age+avg_income+factor_Month, data = sales5) 
+stargazer(negbin53,
+          apply.coef = exp, t.auto=F, p.auto = F,
+          title="Negative Bionomial Results", type="text", 
+          column.labels=c("IRRs"),
+          df=FALSE, digits=4, star.cutoffs = c(0.05,0.01,0.001))
+
+negbin53a <- glm.nb(returnquantity~1, data=sales5) #running a comparison with null model. 
+lrtest(negbin53, negbin53a) # We conclude that the model fits well.
+
+# Check for heteroskedasticity
+gqtest(negbin53) # Goldfeld-Quandt test indicates no heteroskedasticity
+bptest(negbin53) # Breusch-Pagan test indicates heteroskedasticity
+# Since there is heteroskedasticity in the data, we will replace SEs with robust SEs.
+HWrobstder <- sqrt(diag(vcovHC(negbin53, type="HC1"))) # produces Huber-White robust standard errors 
+
+stargazer(negbin53, negbin53,  
+          apply.coef = exp, t.auto=F, p.auto = F,
+          se=list(NULL, HWrobstder),
+          title="Negative Binomial Results", type="text", 
+          column.labels=c("Normal SE", "HW-Robust SE"),
+          df=FALSE, digits=3, star.cutoffs = c(0.05,0.01,0.001))
+
+# Visualize the output
+meffects53 <- ggpredict(negbin53, terms=c("BIE_timeline_PC", "group_store_PC")) # generates a tidy data frame at two different values of BIE_timeline - before and after BOPS implementation.  
+ggplot(meffects53,aes(x, predicted, colour=group)) + geom_line(size=1.3) + 
+    xlab("BOPS Timeline_PC") + ylab("Return Quantity") +
+    labs(colour="group_store_PC") + 
+    scale_colour_discrete(labels=c("5998","2&6")) +
+    scale_x_continuous(breaks=c(0,1), labels=c("Time = 0", "Time = 1")) +
+    theme(axis.title.x=element_blank())
+
+## The interaction coefficient of BIE_timeline_PC:group_store_PC is significant with IRR value 0.615. This means that BOPS implementation is associated with 38.5% decrease in product-level return quantity.
+
+
+####======================IMPACT ON RETURN VALUE==============================####
+
+#Since return value is a dollar value, we will use a linear interaction model with log transformed dependent variable.
+
+sales5$log_returnvalue <- log(1+sales5$returnvalue)
+
+ols54 = lm(log_returnvalue~BIE_timeline_PC*group_store_PC+log_salesvalue+factor_PC+avg_female+avg_age+avg_income+factor_Month, data = sales5)
+stargazer(ols54, 
+          title="Regression Results", type="text", 
+          column.labels=c("Model-1"),
+          df=FALSE, digits=2, star.cutoffs = c(0.05,0.01,0.001)) 
+
+# Check for heteroskedasticity
+gqtest(ols54 ) # Goldfeld-Quandt test indicates no heteroskedasticity
+bptest(ols54) # Breusch-Pagan test indicates heteroskedasticity
+# Since there is heteroskedasticity in the data, we will replace SEs with robust SEs.
+HWrobstder <- sqrt(diag(vcovHC(ols54, type="HC1"))) # produces Huber-White robust standard errors
+stargazer(ols54, ols54,  
+          se=list(NULL, HWrobstder),
+          title="Regression Results", type="text", 
+          column.labels=c("Normal SE", "HW-Robust SE"),
+          df=FALSE, digits=3, star.cutoffs = c(0.05,0.01,0.001))
+
+meffects56 <- ggpredict(ols54, terms=c("BIE_timeline_PC", "group_store_PC"))
+
+ggplot(meffects56,aes(x, predicted, colour=group)) + geom_line(size=1.3) + 
+    xlab("BOPS Timeline") + ylab("Return Value") +
+    labs(colour="group_store") + 
+    scale_colour_discrete(labels=c("5998","2&6")) +
+    scale_x_continuous(breaks=c(0,1), labels=c("Time = 0", "Time = 1")) +
+    theme(axis.title.x=element_blank())
+
+## The interaction coefficient of BIE_timeline_PC:group_store_PC is significant with value -0.333. This means that BOPS implementation is associated with 33.3% decrease in product-level return value.
+
+```
+
+#=============================================================================================##
+## Question6: How does the impact of implementing BOPS strategy vary across product categories?
+#=============================================================================================##
+
+```{r}
+
+#Descriptive stactistics
+stargazer(ODS_prodcat, type="text", median=TRUE, iqr=TRUE,digits=3, title="Descriptive Statistics")
+describeBy(ODS_prodcat, ODS_prodcat$product_category)
+
+# creating groups of store with BOPS implementation
+sales6 <- ODS_prodcat[(ODS_prodcat$day<786),]
+#Add a BIE timeline variable dividing the data into two groups, one before Aug.1, 2011 and the other after.
+#Add a grouping variable for stores dividing the data into two groups, one for 2&6 and the other for 5998.
+sales6$BIE_timeline <- ifelse(sales6$day<366,0,1)
+sales6$group_store <- ifelse((sales6$store_number==2) | (sales6$store_number==6),1,0)
+
+#Assuming mean value for all 'na' values 
+sales6$avg_female[is.na(sales6$avg_female)] <- mean(sales6$avg_female, na.rm = TRUE) 
+sales6$avg_age[is.na(sales6$avg_age)] <- mean(sales6$avg_age, na.rm = TRUE)
+sales6$avg_income[is.na(sales6$avg_income)] <- mean(sales6$avg_income, na.rm = TRUE)
+sales6$avg_homeowner[is.na(sales6$avg_homeowner)] <- mean(sales6$avg_homeowner, na.rm = TRUE)
+sales6$avg_residency[is.na(sales6$avg_residency)] <- mean(sales6$avg_residency, na.rm = TRUE) 
+sales6$avg_childowner[is.na(sales6$avg_childowner)] <- mean(sales6$avg_childowner, na.rm = TRUE)
+stargazer(sales6, type="text", median=TRUE, iqr=TRUE,digits=1, title="Descriptive Statistics") 
+
+
+####=====================IMPACT ON RETURN VALUE======================####
+
+#check normalization
+ggplot(sales6, aes(x=returnvalue)) + geom_histogram(colour="green", bins = 30)
+qqnorm(sales6$returnvalue)
+qqline(sales6$returnvalue, col=2) #distribution is not normal
+
+#analyzing general trend between key independent and dependent variable using box plot
+df61 <- data.frame(returnvalue=sales6$returnvalue, BIE_timeline=as.factor(sales6$BIE_timeline))
+ggplot(df61, aes(x=BIE_timeline, y=returnvalue, fill=BIE_timeline)) + geom_boxplot() + 
+  xlab("BIE_timeline") + ylab("Return Value")
+
+# test for multicollinearity  
+df62=sales6[c("BIE_timeline","group_store","month_dummy","product_category","salesvalue", "avg_female","avg_age","avg_income")]
+stargazer(df62, type="text", median=TRUE, iqr=TRUE,digits=1, title="Descriptive Statistics")  
+round(cor(df62),3) 
+vifcor(df62)# No variable from the 9 input variables has collinearity problem.
+
+#converting into factor variables
+sales6$BIE_timeline<- as.factor(sales6$BIE_timeline)
+sales6$month_dummy<- as.factor(sales6$month_dummy)
+sales6$product_category<- as.factor(sales6$product_category)
+
+#Since sales value is a dollar value, we will use a linear interaction model with log transformed dependent variable.
+sales6$log_salesvalue <- log(1+sales6$salesvalue)
+sales6$log_returnvalue <- log(1+sales6$returnvalue)
+
+# we want to analyse the imapct of BOPS implementation across all the product category, so we will use triple interaction 
+ols61 = lm(log_returnvalue~BIE_timeline*group_store*product_category+log_salesvalue+ month_dummy+ avg_female+avg_age+avg_income, data = sales6)
+stargazer(ols61, 
+          title="Regression Results", type="text", 
+          column.labels=c("Model-Return value "),
+          df=FALSE, digits=2, star.cutoffs = c(0.05,0.01,0.001)) 
+
+# Check for heteroskedasticity
+gqtest(ols61) # Goldfeld-Quandt test indicates heteroskedasticity
+bptest(ols61) # Breusch-Pagan test indicates heteroskedasticity
+
+# Since there is heteroskedasticity in the data, we will replace SEs with clustered robust SEs.
+HWrobstder <- sqrt(diag(vcovHC(ols61, type="HC1"))) # produces Huber-White robust standard errors 
+clusrobstder <- sqrt(diag(cluster.vcov(ols61, sales6$store_number ))) # produces clustered robust standard errors using store_number as clustering variable
+
+stargazer(ols61, ols61, ols61,
+          se=list(NULL, HWrobstder, clusrobstder),
+          title="Regression Results", type="text", 
+          column.labels=c("Normal SE", "HW-Robust SE", "Clustered SE"),
+          df=FALSE, digits=3, star.cutoffs = c(0.05,0.01,0.001)) # displays normal/HW robust/clustered robust standard errors. 
+
+###-----------Marginal Effects ----------------------### 
+
+meffects61 <- ggpredict(ols61, terms=c("BIE_timeline", "group_store","product_category")) 
+
+# Replacing by actual variable names for convenience
+meffects61_colnames <- meffects61[c("x","predicted","group", "facet")]
+colnames(meffects61_colnames) <- c("BIE_timeline", "predicted_return_value","group_store" , "product_category" )
+levels(meffects61_colnames$product_category) <- c('1-Bridal', '2-Gold Wed Bands', '3-Solitaires',   '4-Diamond Fashion', '5-Semi Precious', '6-Mens', '7-Gold Earrings', '8-In House Special Event', '9-Beads','10-Piercings / Close Out', '11-Diamond Solitaires Jewelry', '12-Gold Chain / Jewelry ', '13-Watches', '14-Pre-Owned', '15-Specialized Jewelry', '17-Events', '19-Repair / Warranty','20-Diamond Wedding Bands','21-Sterling Silver')
+
+ggplot(meffects61_colnames, aes(BIE_timeline,
+  y= predicted_return_value, colour =group_store)) +
+  geom_line() +
+  facet_wrap(product_category ~ ., scales="free")
+
+####------Subsetting data based on product categories-------###
+
+#Checking predicted values for all the product categories and analyzing impact of BOPS implementation for both storegroups(group 0 = 5998 and group 1 = 2 and 6)
+#Change product_category epeating the code for all 
+
+df_pc1<- subset(sales6, product_category==1)
+
+ols_pc1= lm(log_returnvalue~BIE_timeline*group_store+log_salesvalue+ month_dummy+ avg_female+avg_age+avg_income, data = df_pc1)
+
+stargazer(ols_pc1,
+          title="Regression Results", type="text", 
+          column.labels=c("ME-pc1"),
+          df=FALSE, digits=4, star.cutoffs = c(0.05,0.01,0.001))
+
+## Check for heteroskedasticity
+gqtest(ols_pc1) # Goldfeld-Quandt test indicates heteroskedasticity
+bptest(ols_pc1) # Breusch-Pagan test indicates heteroskedasticity
+
+# Since there is heteroskedasticity in the data, we will replace SEs with robust SEs.
+HWrobstder <- sqrt(diag(vcovHC(ols_pc1, type="HC1"))) # produces Huber-White robust standard errors 
+clusrobstder <- sqrt(diag(cluster.vcov(ols_pc1, sales6$store_number))) # produces clustered robust standard errors
+
+stargazer(ols_pc1, ols_pc1, ols_pc1,
+          se=list(NULL, HWrobstder, clusrobstder),
+          title="REgression Results", type="text", 
+          column.labels=c("Normal SE", "HW-Robust SE", "Clustered SE"),
+          df=FALSE, digits=3, star.cutoffs = c(0.05,0.01,0.001)) # displays normal/HW robust/clustered robust standard errors. With clustered robust standard errors
+
+
+meffects_pc1 <- ggpredict(ols_pc1, terms=c("BIE_timeline", "group_store")) # generates a tidy data frame 
+ggplot(meffects_pc1,aes(x, predicted, colour=group)) + geom_line(size=1.3) + 
+    xlab("BOPS Timeline") + ylab("Return Value") +
+    labs(colour="group_store") + 
+    scale_colour_discrete(labels=c("5998","2&6")) +
+    scale_x_continuous(breaks=c(0,1), labels=c("Time=0", "Time=1")) +
+    theme(axis.title.x=element_blank())
+
+
+##Interaction coefficients are insignificant for following categories- 5,6,7.
+##Data available only for one store_group:8,10,15,17.
+
+### Interaction coefficient is significant for categories - 1,2,3,4,9,11,12,13,14,20,21.
+## Therefore, BOPS implementation for these categories is aasociated with: 
+# Product Category 1: 42.9% decrease in return value
+# Product Category 3: 93.9% decrease in return value
+# Product Category 4: 95.0% decrease in return value
+# Product Category 9: 49.3% decrease in return value
+# Product Category 12: 34.6% decrease in return value
+# Product Category 13: 81.3% decrease in return value
+# Product Category 14: 41.4% decrease in return value
+# Product Category 20: 92.7% decrease in return value
+# Product Category 21: 54.0% decrease in return value
+
+# Product Category 2: 19.1% increase in return value
+# Product Category 11: 37.4% increase in return value
+
+### In order to further access the impact of BOPS implementation on return value, we divided these in three broad groups: 
+#   No Impact: 5,6,7 
+#   Low Impact(Decrease<50%): 1,9,12,14,
+#   High Impact (Decrease>50%): cat. 3,4,13,20,21.
+
+#  Also, we see an increase in return value for categories 2 and 11. 
+
+
+####=====================IMPACT ON SALES VALUE======================####
+
+ols62 = lm(log_salesvalue~BIE_timeline*group_store*product_category+ month_dummy+ avg_female+avg_age+avg_income + avg_homeowner + avg_childowner, data = sales6)
+
+stargazer(ols62, 
+          title="Regression Results", type="text", 
+          column.labels=c("Model-sales value "),
+          df=FALSE, digits=2, star.cutoffs = c(0.05,0.01,0.001)) 
+
+# Check for heteroskedasticity
+gqtest(ols62) # Goldfeld-Quandt test indicates heteroskedasticity
+bptest(ols62) # Breusch-Pagan test indicates heteroskedasticity
+
+# Since there is heteroskedasticity in the data, we will replace SEs with clustered robust SEs.
+HWrobstder <- sqrt(diag(vcovHC(ols62, type="HC1"))) # produces Huber-White robust standard errors 
+clusrobstder <- sqrt(diag(cluster.vcov(ols62, sales6$store_number ))) # produces clustered robust standard errors using store_number as clustering variable
+
+stargazer(ols62, ols62, ols62,
+          se=list(NULL, HWrobstder, clusrobstder),
+          title="Regression Results", type="text", 
+          column.labels=c("Normal SE", "HW-Robust SE", "Clustered SE"),
+          df=FALSE, digits=3, star.cutoffs = c(0.05,0.01,0.001)) # displays normal/HW robust/clustered robust standard errors. 
+
+### Since we cannot interpret the results of a triple interaction model, we will analyse the imapact of BOPS implementation on individual categories by subsetting the data further.This will help us understand how sales value is changing for each category w.r.t store groups(group 0 = 5998 and group 1 = 2&6).
+
+###-----------Marginal Effects ----------------------### 
+
+meffects62 <- ggpredict(ols62, terms=c("BIE_timeline", "group_store","product_category")) 
+
+# Replacing by actual variable names for convenience
+meffects62_colnames <- meffects62[c("x","predicted","group", "facet")]
+colnames(meffects62_colnames) <- c("BIE_timeline", "predicted_sales_value","group_store" , "product_category" )
+levels(meffects62_colnames$product_category) <- c('1-Bridal', '2-Gold Wed Bands', '3-Solitaires',   '4-Diamond Fashion', '5-Semi Precious', '6-Mens', '7-Gold Earrings', '8-In House Special Event', '9-Beads','10-Piercings / Close Out', '11-Diamond Solitaires Jewelry', '12-Gold Chain / Jewelry ', '13-Watches', '14-Pre-Owned', '15-Specialized Jewelry', '17-Events', '19-Repair / Warranty','20-Diamond Wedding Bands','21-Sterling Silver')
+
+ggplot(meffects62_colnames, aes(BIE_timeline,
+  y= predicted_sales_value, colour =group_store)) +
+  geom_line() +
+  facet_wrap(product_category ~ ., scales="free")
+
+### Checking predicted values for all the product categories (from 1 to 21) and analyzing impact of BOPS implementation for both storegroups(group 0 = 5998 and group 1 = 2 and 6).
+
+df2_pc1<- subset(sales6, product_category==1)
+
+ols2_pc1= lm(log_salesvalue~BIE_timeline*group_store+ month_dummy+ avg_female+avg_age+avg_income+ avg_homeowner + avg_childowner, data = df2_pc1)
+ 
+stargazer(ols2_pc1,
+          title="Regression Results", type="text", 
+          column.labels=c("ME-pc1"),
+          df=FALSE, digits=4, star.cutoffs = c(0.05,0.01,0.001))
+
+## Check for heteroskedasticity
+gqtest(ols2_pc1) # Goldfeld-Quandt test indicates no heteroskedasticity
+bptest(ols2_pc1) # Breusch-Pagan test indicates heteroskedasticity
+
+# Since there is heteroskedasticity in the data, we will replace SEs with robust SEs.
+HWrobstder <- sqrt(diag(vcovHC(ols2_pc1, type="HC1"))) # produces Huber-White robust standard errors 
+clusrobstder <- sqrt(diag(cluster.vcov(ols2_pc1, sales6$store_number))) # produces clustered robust standard errors
+
+stargazer(ols2_pc1, ols2_pc1, ols2_pc1,
+          se=list(NULL, HWrobstder, clusrobstder),
+          title=" Regression Results", type="text", 
+          column.labels=c("Normal SE", "HW-Robust SE", "Clustered SE"),
+          df=FALSE, digits=3, star.cutoffs = c(0.05,0.01,0.001)) # displays normal/HW robust/clustered robust standard errors. With clustered robust standard errors
+
+meffects2_pc1 <- ggpredict(ols2_pc1, terms=c("BIE_timeline", "group_store")) # generates a tidy data frame 
+ggplot(meffects2_pc1,aes(x, predicted, colour=group)) + geom_line(size=1.3) + 
+    xlab("BOPS Timeline") + ylab("Sales Value") +
+    labs(colour="group_store") + 
+    scale_colour_discrete(labels=c("5998","2&6")) +
+    scale_x_continuous(breaks=c(0,1), labels=c("Time=0", "Time=1")) +
+    theme(axis.title.x=element_blank())
+
+### Interaction coefficient is insignificant for categories - 6,7
+### However, there was no coefficient displayed for categories - 8,10,15,17, because data is available for only one store group. So, we cannot analyse these categories.
+
+### Interaction coefficient is significant for categories - 1,2,3,4,5,9,11,12,13,14,20,21
+##  Therefore, BOPS implementation for these categories is aasociated with: 
+#   Product Category 1: 31.3% decrease in sales value
+#   Product Category 2: 38.8% decrease in sales value
+#   Product Category 3: 6.4% decrease in sales value
+#   Product Category 4: 62% decrease in sales value
+#   Product Category 5: 27.2% decrease in sales value
+#   Product Category 11: 16.9% decrease in sales value
+#   Product Category 12: 31.7% decrease in sales value
+#   Product Category 14: 114% decrease in sales value
+#   Product Category 20: 5.7% decrease in sales value
+#   Product Category 21: 39.3% decrease in sales value
+
+#   Product Category 9: 35% increase in sales value
+#   Product Category 13: 12.2% increase in sales value
+
+### In order to further access the impact of BOPS implementation on sales value, we divided these in three broad groups: 
+#   No Impact(insignificant): cat. 6,7 
+#   Low Impact(Decrease<30%): cat. 3,5, 11,20
+#   High Impact (Decrease>50%): cat. 1,2,12,21,4,14
+
+#  Also, we see an increase in sales value for categories 9 and 13. 
+
+```
