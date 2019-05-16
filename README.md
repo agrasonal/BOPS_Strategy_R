@@ -14,9 +14,9 @@ The data covers all online transactions made between August 1st, 2010 and July 3
   <li>Online channels 2 and 6 started the BOPS strategy on August 1st, 2011.</li>
   <li>Online channel 5998 started the BOPS strategy on September 27th, 2012.</li>
 </ul>
-<p><b>Transaction Level Data</b> - This dataset included all transactions made between August 1st, 2010 and July 31st, 2013.
-<b>Consumer Level Data</b> - This dataset included purchase information for all customers who both, made at least one purchase before the BOPS implementation and made at least one purchase after the BOPS implementation. <br>
-<b>Online Daily Data</b> - This dataset was captured in two different ways:</p>
+<p><b>Transaction Level Data</b> - This dataset included all transactions made between August 1st, 2010 and July 31st, 2013.<br>
+  <b>Consumer Level Data</b> - This dataset included purchase information for all customers who both, made at least one purchase before   the BOPS implementation and made at least one purchase after the BOPS implementation. <br>
+  <b>Online Daily Data</b> - This dataset was captured in two different ways:</p>
 <ul>
   <li>Online daily sales-returns dataset, which included sales and returns at each online store for a given day.</li>
   <li>Online daily prod_cat sales-returns dataset, which included sales and returns for each product category at a given online store for a given day.</li>
